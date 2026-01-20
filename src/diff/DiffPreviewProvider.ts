@@ -287,9 +287,11 @@ export class DiffPreviewProvider implements vscode.CodeLensProvider, vscode.Hove
 
             // Insert deleted lines as comments at their positions
             let insertOffset = 0;
+            const commentStyle = this.getCommentStyle(document.languageId);
+
             for (const deleted of diff.deletedLines.sort((a, b) => a.afterLine - b.afterLine)) {
                 const insertAt = deleted.afterLine + 1 + insertOffset;
-                const commentedLine = `<!-- DELETED: ${deleted.content.trim()} -->`;
+                const commentedLine = commentStyle.prefix + ` DELETED: ${deleted.content.trim()} ` + commentStyle.suffix;
                 lines.splice(insertAt, 0, commentedLine);
                 deletedLineNumbers.push(insertAt);
                 insertOffset++;
@@ -562,11 +564,17 @@ export class DiffPreviewProvider implements vscode.CodeLensProvider, vscode.Hove
         }
 
         try {
-            // Remove all <!-- DELETED: ... --> comment lines before saving
             const doc = this.pendingChange.document;
             const currentText = doc.getText();
             const lines = currentText.split('\n');
-            const cleanedLines = lines.filter(line => !line.trim().match(/^<!--\s*DELETED:/));
+            const commentStyle = this.getCommentStyle(doc.languageId);
+
+            // Escape special chars for regex (though our current ones are simple)
+            const prefix = commentStyle.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const suffix = commentStyle.suffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const deleteRegex = new RegExp(`^\\s*${prefix}\\s*DELETED:.*${suffix}\\s*$`);
+
+            const cleanedLines = lines.filter(line => !line.match(deleteRegex));
             const cleanedContent = cleanedLines.join('\n');
 
             // Apply the cleaned content
@@ -612,6 +620,11 @@ export class DiffPreviewProvider implements vscode.CodeLensProvider, vscode.Hove
         try {
             // Revert to original content
             await this.applyToDocument(this.pendingChange.document, this.pendingChange.oldContent);
+
+            // Auto-save to trigger HMR (Hot Module Replacement) in dev server
+            // This ensures the preview refreshes to show the rejection (removal of changes)
+            console.log('[DiffPreview] Auto-saving after reject to trigger HMR');
+            await this.pendingChange.document.save();
 
             console.log('[DiffPreview] Changes reverted');
             vscode.window.showInformationMessage(
@@ -659,6 +672,28 @@ export class DiffPreviewProvider implements vscode.CodeLensProvider, vscode.Hove
      */
     public hasPendingChanges(): boolean {
         return this.pendingChange !== null;
+    }
+
+    /**
+     * Get comment style based on language
+     */
+    private getCommentStyle(languageId: string): { prefix: string; suffix: string } {
+        switch (languageId) {
+            case 'javascriptreact':
+            case 'typescriptreact':
+                return { prefix: '{/*', suffix: '*/}' };
+            case 'javascript':
+            case 'typescript':
+            case 'css':
+            case 'scss':
+            case 'less':
+                return { prefix: '/*', suffix: '*/' };
+            case 'html':
+            case 'xml':
+                return { prefix: '<!--', suffix: '-->' };
+            default:
+                return { prefix: '//', suffix: '' };
+        }
     }
 
     /**

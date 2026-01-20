@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { AgentContext, SelectedElement } from '../agent/AgentContext';
 import { DevServerManager } from '../server/DevServerManager';
 import { getPreviewHtml, processHtmlForPreview } from './previewHtml';
@@ -14,8 +15,11 @@ export class PreviewPanel {
     private readonly _agentContext: AgentContext;
     private _document: vscode.TextDocument;
     private _devServer: DevServerManager | null = null;
+    private _devServerUrl: string | undefined;
     private _isEditMode: boolean = true;
     private _disposables: vscode.Disposable[] = [];
+    private _isDisposed: boolean = false;
+    private _hmrFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
     public static createOrShow(
         extensionUri: vscode.Uri,
@@ -72,7 +76,9 @@ export class PreviewPanel {
     }
 
     private async _initializeContent() {
+        if (this._isDisposed) return;
         const isReactProject = await this._detectProjectType();
+        if (this._isDisposed) return;
 
         if (isReactProject) {
             await this._startDevServer();
@@ -94,44 +100,122 @@ export class PreviewPanel {
             const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
             // Check for React-based frameworks
-            return !!(deps.react || deps.vue || deps.svelte || deps.next);
+            const isReact = !!(deps.react || deps.next || deps.vite || deps['react-scripts']);
+            return isReact;
         } catch {
             return false;
         }
     }
 
     private async _startDevServer() {
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(this._document.uri);
-        if (!workspaceFolder) return;
+        if (this._isDisposed) return;
 
-        this._devServer = new DevServerManager(workspaceFolder.uri.fsPath);
+        if (!this._devServer) {
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(this._document.uri);
+            if (!workspaceFolder) return;
+
+            this._devServer = new DevServerManager(workspaceFolder.uri.fsPath);
+        }
 
         try {
-            const url = await this._devServer.start();
-            this._panel.webview.html = getPreviewHtml(
+            const url = await this._devServer!.start();
+            if (this._isDisposed) return;
+
+            // Only update if URL changed to avoid iframe reload flicker
+            if (this._devServerUrl === url) {
+                return;
+            }
+
+            this._devServerUrl = url;
+
+            // Inject bridge script for iframe communication
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(this._document.uri);
+            if (workspaceFolder) {
+                this._injectBridgeScript(workspaceFolder.uri.fsPath);
+            }
+
+            this._updateWebview();
+        } catch (error) {
+            if (this._isDisposed) return;
+            console.error('[PreviewPanel] Failed to start dev server:', error);
+            this._renderHtmlContent(); // Fallback
+        }
+    }
+
+    private _injectBridgeScript(workspacePath: string) {
+        try {
+            const publicDir = path.join(workspacePath, 'public');
+            if (fs.existsSync(publicDir)) {
+                const bridgeSrc = path.join(this._extensionUri.fsPath, 'resources', 'scripts', 'bridge.js');
+                const bridgeDest = path.join(publicDir, 'antigravity-bridge.js');
+
+                // Copy bridge file
+                fs.copyFileSync(bridgeSrc, bridgeDest);
+                console.log('[PreviewPanel] Injected bridge.js to', bridgeDest);
+
+                // Ensure index.html includes it
+                const indexHtmlPath = path.join(publicDir, 'index.html');
+                const rootIndexHtml = path.join(workspacePath, 'index.html');
+                const targetIndex = fs.existsSync(indexHtmlPath) ? indexHtmlPath : (fs.existsSync(rootIndexHtml) ? rootIndexHtml : null);
+
+                if (targetIndex) {
+                    let htmlContent = fs.readFileSync(targetIndex, 'utf-8');
+                    // Avoid duplicate injection
+                    if (!htmlContent.includes('antigravity-bridge.js')) {
+                        // Inject before </head>
+                        if (htmlContent.includes('</head>')) {
+                            htmlContent = htmlContent.replace('</head>', '<script src="/antigravity-bridge.js"></script>\n</head>');
+                            fs.writeFileSync(targetIndex, htmlContent);
+                            console.log('[PreviewPanel] Injected script tag into', targetIndex);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[PreviewPanel] Failed to inject bridge script:', e);
+        }
+    }
+
+    private _updateWebview() {
+        if (this._isDisposed) return;
+
+        if (this._devServerUrl) {
+            const newHtml = getPreviewHtml(
                 this._panel.webview,
                 this._extensionUri,
-                { type: 'url', url, editMode: this._isEditMode }
+                { type: 'url', url: this._devServerUrl, editMode: this._isEditMode }
             );
-        } catch (error) {
-            vscode.window.showErrorMessage(`Failed to start dev server: ${error}`);
+
+            // Optimization: Only update if HTML is actually different
+            if (this._panel.webview.html !== newHtml) {
+                this._panel.webview.html = newHtml;
+            }
+        } else {
             this._renderHtmlContent();
         }
     }
 
     private _renderHtmlContent() {
+        if (this._isDisposed) return;
         const content = this._document.getText();
-        this._panel.webview.html = getPreviewHtml(
+        const newHtml = getPreviewHtml(
             this._panel.webview,
             this._extensionUri,
-            { type: 'html', content, editMode: this._isEditMode }
+            { type: 'html', content, editMode: this._isEditMode, fileName: this._document.fileName }
         );
+
+        if (this._panel.webview.html !== newHtml) {
+            this._panel.webview.html = newHtml;
+        }
     }
 
     private _handleMessage(message: any) {
-        // console.log('[PreviewPanel] Received message:', message.type, message.data ? JSON.stringify(message.data).substring(0, 200) : '');
+        console.log('[PreviewPanel] Received message:', message.type, message.data ? JSON.stringify(message.data).substring(0, 200) : '');
 
         switch (message.type) {
+            case 'log':
+                console.log('[Webview Log]', ...message.args);
+                break;
             case 'elementSelected':
                 this._onElementSelected(message.data);
                 break;
@@ -148,9 +232,11 @@ export class PreviewPanel {
                 this._onElementMoved(message.data);
                 break;
             case 'elementDeleted':
+                vscode.window.showInformationMessage('Element Delete Request Received');
                 this._onElementDeleted(message.data);
                 break;
             case 'elementDuplicated':
+                vscode.window.showInformationMessage('Element Duplicate Request Received');
                 this._onElementDuplicated(message.data);
                 break;
             case 'requestContent':
@@ -216,26 +302,40 @@ export class PreviewPanel {
         // Note: All changes are batched into a single diff by DiffPreviewProvider
     }
 
-    private async _onElementMoved(data: { path: string; newParentPath: string; newIndex: number }) {
+    private async _onElementMoved(data: any) {
         // console.log('[PreviewPanel] _onElementMoved called:', data);
         const success = await CodeSync.applyElementMove(
             this._document,
             data.path,
             data.newParentPath,
-            data.newIndex
+            data.newIndex,
+            data.agId,
+            data.direction,
+            data.moveType
         );
         // console.log('[PreviewPanel] applyElementMove returned:', success);
         // Note: Don't show duplicate message - DiffPreviewProvider handles messaging
     }
 
     private async _onElementDeleted(data: { path: string; agId?: string }) {
-        // console.log('[PreviewPanel] _onElementDeleted called:', data);
         const success = await CodeSync.applyElementDelete(
             this._document,
             data.path,
             data.agId
         );
-        // console.log('[PreviewPanel] applyElementDelete returned:', success);
+
+        if (success) {
+            if (!this._devServerUrl) {
+                // Static HTML mode: Send optimistic update to immediately remove element
+                this._panel.webview.postMessage({
+                    type: 'optimisticDelete',
+                    data: data
+                });
+            } else {
+                // Dev server mode: HMR will handle refresh. Add fallback reload.
+                this._scheduleHmrFallback();
+            }
+        }
     }
 
     private async _onElementDuplicated(data: { path: string; agId?: string }) {
@@ -246,6 +346,21 @@ export class PreviewPanel {
             data.agId
         );
         // console.log('[PreviewPanel] applyElementDuplicate returned:', success);
+
+        if (success) {
+            if (!this._devServerUrl) {
+                // Static HTML mode: Send optimistic update
+                this._panel.webview.postMessage({
+                    type: 'optimisticDuplicate',
+                    data: data
+                });
+            } else {
+                // Dev server mode: HMR will handle refresh. Add fallback reload.
+                this._scheduleHmrFallback();
+            }
+
+
+        }
     }
 
     private _sendContentToPreview() {
@@ -253,6 +368,25 @@ export class PreviewPanel {
             type: 'contentUpdate',
             content: this._document.getText(),
         });
+    }
+
+    /**
+     * Schedule a fallback iframe reload if HMR doesn't trigger within 2s
+     */
+    private _scheduleHmrFallback() {
+        // Clear any existing timer
+        if (this._hmrFallbackTimer) {
+            clearTimeout(this._hmrFallbackTimer);
+        }
+
+        // Set a 2 second fallback to reload the iframe if HMR doesn't work
+        this._hmrFallbackTimer = setTimeout(() => {
+            console.log('[PreviewPanel] HMR fallback triggered - reloading iframe');
+            this._panel.webview.postMessage({
+                type: 'forceReload'
+            });
+            this._hmrFallbackTimer = null;
+        }, 2000);
     }
 
     public toggleEditMode() {
@@ -264,18 +398,27 @@ export class PreviewPanel {
     }
 
     public updateDocument(document: vscode.TextDocument) {
+        if (this._isDisposed) return;
+
+        if (this._document && this._document.uri.fsPath.toLowerCase() === document.uri.fsPath.toLowerCase()) {
+            // Already showing this document (case-insensitive for Windows)
+            return;
+        }
         this._document = document;
         this._initializeContent();
     }
 
     public onDocumentChange(event: vscode.TextDocumentChangeEvent) {
+        if (this._isDisposed) return;
         if (event.document.uri.toString() === this._document.uri.toString()) {
-            // Debounce updates for performance
-            const rawContent = event.document.getText();
+            // Dev Server handles its own HMR via Vite/Next
+            if (this._devServerUrl) {
+                return;
+            }
 
-            // KEY FIX: Process the content to inject IDs before sending to webview
-            // This updates the AST map and ensures elements can still be tracked
-            const processedContent = processHtmlForPreview(rawContent);
+            // For static HTML, send content update
+            const rawContent = event.document.getText();
+            const processedContent = processHtmlForPreview(rawContent, this._document.fileName);
 
             this._panel.webview.postMessage({
                 type: 'contentUpdate',
@@ -296,6 +439,8 @@ export class PreviewPanel {
     }
 
     public dispose() {
+        if (this._isDisposed) return;
+        this._isDisposed = true;
         PreviewPanel.currentPanel = undefined;
 
         // Stop dev server if running

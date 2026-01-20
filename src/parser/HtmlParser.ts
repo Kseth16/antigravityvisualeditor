@@ -128,69 +128,105 @@ export class HtmlParser {
     }
 
     /**
-     * Apply a text edit to an element
+     * Apply a text edit to an element using strict offsets
      */
     public applyTextEdit(element: ParsedElement, newText: string): string {
-        if (!element.textContent) return this.content;
+        const startOffset = element.location.startOffset;
+        const endOffset = element.location.endOffset;
 
-        const lines = this.content.split('\n');
-        const line = lines[element.location.startLine - 1];
+        // Find the end of the opening tag
+        let openTagEnd = this.content.indexOf('>', startOffset);
+        if (openTagEnd === -1) return this.content;
 
-        // Find and replace the text content
-        const regex = new RegExp(`(>)([^<]*)(${this.escapeRegex(element.textContent)})([^<]*)(<)`, 'g');
-        lines[element.location.startLine - 1] = line.replace(regex, `$1$2${newText}$4$5`);
+        // Check if self-closing or void
+        if (this.content[openTagEnd - 1] === '/') {
+            // It's self-closing <tag />. Convert to <tag>text</tag>
+            // This is complex because we need to know the tag name to close it.
+            // But usually we just replace content of existing elements.
+            // For now, if self-closing, we change <tag /> to <tag>newText</tag>
+            const openTag = this.content.substring(startOffset, openTagEnd + 1);
+            const newOpenTag = openTag.replace('/>', '>');
+            return this.content.substring(0, startOffset) +
+                newOpenTag + newText + `</${element.tagName}>` +
+                this.content.substring(openTagEnd + 1);
+        }
 
-        return lines.join('\n');
+        // It has a closing tag. Find the start of the closing tag.
+        // We look backwards from endOffset.
+        // element.location.endOffset marks the end of the closing tag </tag> (exclusive or inclusive? htmlparser2 usually provides endIndex inclusive).
+        // Let's verify usage. In `onclosetag`: `const endOffset = parser.endIndex! + 1;` -> This is exclusive index for substring.
+
+        let closeTagStart = this.content.lastIndexOf('<', endOffset - 1);
+
+        if (closeTagStart <= openTagEnd) {
+            // weird case, maybe <div ></div> with no content, closeTagStart should be > openTagEnd
+            // If they are adjacent (empty content) <tag></tag>
+            // openTagEnd is index of first >. closeTagStart is index of < of </tag>.
+            return this.content.substring(0, openTagEnd + 1) + newText + this.content.substring(closeTagStart);
+        }
+
+        return this.content.substring(0, openTagEnd + 1) + newText + this.content.substring(closeTagStart);
     }
 
     /**
-     * Apply a style change to an element
+     * Apply a style change to an element using strict offsets
      */
     public applyStyleEdit(element: ParsedElement, property: string, value: string): string {
-        const lines = this.content.split('\n');
-        const startLine = element.location.startLine - 1;
+        const startOffset = element.location.startOffset;
 
-        // Get the opening tag
-        let tagContent = '';
-        let endLine = startLine;
+        // Find the end of the opening tag
+        let openTagEnd = this.content.indexOf('>', startOffset);
+        if (openTagEnd === -1) return this.content;
 
-        for (let i = startLine; i < lines.length; i++) {
-            tagContent += lines[i];
-            if (tagContent.includes('>')) {
-                endLine = i;
-                break;
-            }
-            tagContent += '\n';
-        }
+        const openTag = this.content.substring(startOffset, openTagEnd + 1);
 
-        // Parse existing style attribute
-        const styleMatch = tagContent.match(/style\s*=\s*["']([^"']*)["']/);
-        const existingStyle = styleMatch ? styleMatch[1] : '';
+        // Tokenize attributes manually to find style
+        // We search for style=...
+        // We shouldn't use a global regex on the tag because it might match inside other attributes (unlikely for style, but possible).
+        // Simple robust approach for style attribute:
 
-        // Update or add the property
+        const styleRegex = /style\s*=\s*(["'])(.*?)\1/i;
+        const match = openTag.match(styleRegex);
+
         const cssProperty = this.camelToKebab(property);
-        const styleRegex = new RegExp(`${cssProperty}\\s*:\\s*[^;]+;?`, 'g');
+        const newStyleDecl = `${cssProperty}: ${value}`;
 
-        let newStyle: string;
-        if (existingStyle.match(styleRegex)) {
-            newStyle = existingStyle.replace(styleRegex, `${cssProperty}: ${value};`);
+        if (match) {
+            // Update existing style
+            const existingStyle = match[2];
+            const quote = match[1];
+
+            // Check if property exists
+            const propRegex = new RegExp(`${cssProperty}\\s*:\\s*[^;]+;?`, 'i');
+            let newStyle: string;
+
+            if (propRegex.test(existingStyle)) {
+                newStyle = existingStyle.replace(propRegex, `${newStyleDecl};`);
+            } else {
+                newStyle = existingStyle.trim();
+                if (newStyle && !newStyle.endsWith(';')) newStyle += '; ';
+                newStyle += newStyleDecl + ';';
+            }
+
+            // Replace the style attribute value in the opening tag
+            // We replace using the match index relative to openTag
+            const newOpenTag = openTag.substring(0, match.index!) +
+                `style=${quote}${newStyle}${quote}` +
+                openTag.substring(match.index! + match[0].length);
+
+            return this.content.substring(0, startOffset) + newOpenTag + this.content.substring(openTagEnd + 1);
         } else {
-            newStyle = existingStyle ? `${existingStyle}; ${cssProperty}: ${value}` : `${cssProperty}: ${value}`;
+            // Add new style attribute
+            // Insert before the closing > or />
+            let insertPos = openTag.length - 1;
+            if (openTag.endsWith('/>')) insertPos--;
+
+            const needsSpace = !/\s/.test(openTag[insertPos - 1]);
+            const insertStr = (needsSpace ? ' ' : '') + `style="${newStyleDecl};"`;
+
+            const newOpenTag = openTag.substring(0, insertPos) + insertStr + openTag.substring(insertPos);
+            return this.content.substring(0, startOffset) + newOpenTag + this.content.substring(openTagEnd + 1);
         }
-
-        // Apply the style
-        let newTagContent: string;
-        if (styleMatch) {
-            newTagContent = tagContent.replace(/style\s*=\s*["'][^"']*["']/, `style="${newStyle}"`);
-        } else {
-            newTagContent = tagContent.replace(/>/, ` style="${newStyle}">`);
-        }
-
-        // Reconstruct content
-        const beforeTag = lines.slice(0, startLine).join('\n');
-        const afterTag = lines.slice(endLine + 1).join('\n');
-
-        return beforeTag + (beforeTag ? '\n' : '') + newTagContent + (afterTag ? '\n' : '') + afterTag;
     }
 
     /**

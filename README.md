@@ -1,6 +1,6 @@
 # Antigravity Visual Editor
 
-**A powerful visual editing extension for VS Code that brings Lovable-like WYSIWYG editing to your workflow.**
+**A powerful visual editing extension for Antigravity VS Code that brings Lovable-like WYSIWYG editing to your workflow.**
 
 Focus on design without losing control of your code. Antigravity bridges the gap between visual design and source code, allowing you to edit HTML and React components visually while keeping your code clean and sync-able.
 
@@ -11,62 +11,101 @@ Focus on design without losing control of your code. Antigravity bridges the gap
 
 ## ✨ Key Features
 
-- **🖼️ Real-Time Preview**: precise WYSIWYG editing synchronized with your code.
-- **🎨 Advanced Style Panel**: visually edit CSS (Typography, Spacing, Backgrounds, Borders) without memorizing syntax.
-- **🖱️ Drag & Drop**: move elements around or rearrange lists naturally.
-- **🤖 AI Agent Integration**: seamless context sharing allows you to tell your AI agent "Make this blue" or "Duplicate this", and it just works.
-- **🛡️ Safe Diff Preview**: review changes in a visual diff before they are applied to your source files.
-- **⚡ Batched Editing**: make multiple changes and apply them all at once.
+### 🖼️ Real-Time Preview
+- Live preview of your HTML and **React components**
+- Automatic Vite dev server integration for React projects
+- Hot Module Replacement (HMR) for instant updates
+
+### 🎨 Advanced Style Panel
+- Visually edit CSS (Typography, Spacing, Backgrounds, Borders) without memorizing syntax
+- Changes buffered until you save - preview without commitment
+- Works with both HTML and React/JSX components
+
+### 🖱️ Drag & Drop Rearrangement
+- **Unified drag-and-drop** for both HTML and React elements
+- Visual feedback during drag (semi-transparent with dashed outline)
+- Live rearrangement - see elements move as you drag
+- Click ↕️ to enter drag mode, then drag to reorder
+
+### ✏️ Inline Text Editing
+- Edit text content directly in the Style Panel
+- Changes sync to source code (both HTML and JSX)
+
+### 📋 Duplicate & 🗑️ Delete
+- One-click duplication of elements
+- Delete elements safely with diff preview
+- Works on both HTML and React components
+
+### 🤖 AI Agent Integration
+- Seamless context sharing via `.antigravity-context.json`
+- Tell your AI agent "Make this blue" or "Duplicate this" by selecting elements for context
+- Use `/visual-editor` workflow command
+
+### 🛡️ Safe Diff Preview
+- Review all changes before they're applied
+- Visual highlighting of additions (green) and deletions (red)
+- Accept or Reject changes with one click
+- Batched editing - make multiple changes, apply all at once
 
 ---
 
 ## 📥 Installation
 
 ### From VSIX (Manual)
-1.  Obtain the `.vsix` file package.
-2.  Open VS Code and go to the **Extensions** view (`Ctrl+Shift+X`).
-3.  Click the `...` menu in the top-right corner.
-4.  Select **Install from VSIX...**.
-5.  Choose the `antigravity-visual-editor-0.1.0.vsix` file.
+1. Obtain the `.vsix` file package.
+2. Open VS Code and go to the **Extensions** view (`Ctrl+Shift+X`).
+3. Click the `...` menu in the top-right corner.
+4. Select **Install from VSIX...**.
+5. Choose the `antigravity-visual-editor-0.1.0.vsix` file.
 
 ---
 
 ## 🚀 Getting Started
 
-1.  **Open a File**: Open an HTML file or a React component (`.jsx`/`.tsx`).
-2.  **Launch Editor**: 
-    *   Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`).
-    *   Run **"Antigravity: Open Visual Editor"**.
-    *   *Shortcut*: `Ctrl+Shift+V` (Windows/Linux) or `Cmd+Shift+V` (Mac).
-3.  **Start Editing**: The editor will open side-by-side with your code.
+### For HTML Files
+1. Open any `.html` file.
+2. Run **"Antigravity: Open Visual Editor"** from Command Palette (`Ctrl+Shift+P`).
+3. Start editing visually!
+
+### For React Projects
+1. Open a React component (`.jsx`/`.tsx`) in a project with `package.json`.
+2. Run **"Antigravity: Open Visual Editor"**.
+3. The extension automatically:
+   - Detects it's a React project
+   - Starts a Vite dev server
+   - Opens a live preview with HMR
+4. Edit visually - changes sync to your source code!
 
 ---
 
 ## 🎨 Using the Visual Editor
 
-### 1. Selection & Context
-*   **Click** any element in the preview to select it.
-*   The breadcrumb bar at the bottom shows the element's hierarchy (e.g., `BODY > DIV > CARD > H3`).
-*   **Context File**: Selecting an element automatically updates the `.antigravity-context.json` file in your workspace, allowing other tools (like AI agents) to know exactly what you are looking at.
+### Selection & Context
+- **Click** any element in the preview to select it
+- A **context toolbar** appears with action buttons
+- The `.antigravity-context.json` file updates automatically for AI integration
 
-### 2. Styling (The Style Panel)
-When an element is selected, the **Style Panel** opens on the right.
-*   **Visual Controls**: Adjust font size, colors, padding, margins, borders, and shadows using simple inputs.
-*   **Safety**: Changes are **buffered**. You see them in the preview immediately, but your code isn't touched until you save.
-*   **Save/Cancel**: 
-    *   Click **Save Changes** (green check) to apply edits to your source code.
-    *   Click **Cancel** (red X) to revert the preview to its original state.
+### Toolbar Actions
+| Button | Action |
+|:---:|:---|
+| ✏️ | Open Style Panel |
+| ↕️ | Enter drag-to-rearrange mode |
+| 🔝 | Select parent element |
+| 📋 | Duplicate element |
+| 🗑️ | Delete element |
 
-### 3. Text Editing
-*   **Select** the text element you want to change.
-*   In the Style Panel, look for the **Content** section.
-*   Edit the text in the text area.
-*   Click **Save Changes** to update the text in your source file.
+### Style Panel
+- **Typography**: Font size, weight, style, color
+- **Spacing**: Padding and margin controls
+- **Background**: Color picker
+- **Borders**: Width, style, color, radius
+- Click **Save** to apply, **Cancel** to revert
 
-### 4. Drag & Drop
-*   **Rearrange**: Drag an element within its list to reorder it (e.g., reorder list items or cards).
-*   **Drop Zones**: elements move to show where they will be placed.
-*   *Note: Moving elements between different containers is not yet supported in this version.*
+### Drag & Drop
+1. Select an element
+2. Click the ↕️ button (element becomes semi-transparent)
+3. Click and drag up/down to reorder
+4. Release to finalize - source code updates automatically
 
 ---
 
@@ -75,41 +114,56 @@ When an element is selected, the **Style Panel** opens on the right.
 Antigravity is designed to be the "eyes" for your AI coding assistant.
 
 ### The "Click-and-Chat" Workflow
-1.  **Select** an element in the Visual Editor.
-2.  Switch to your AI Agent (e.g., in the terminal or sidebar).
-3.  **Command It**: Tell the agent what to do with the element using "/visual-editor".
-    *   *The agent checks `.antigravity-context.json` to identify the target element.*
-
-### Example Commands
-*   *"/visual-editor Make this button have a red background and white text."*
-*   *"/visual-editor Duplicate this card three times."*
-*   *"/visual-editor Add 20px padding to this container."*
-*   *"/visual-editor Change this text to 'Welcome Home'."*
+1. **Select** an element in the Visual Editor
+2. Switch to your AI Agent
+3. **Command It** using `/visual-editor`:
+   - *"/visual-editor Make this button have a red background"*
+   - *"/visual-editor Duplicate this card three times"*
+   - *"/visual-editor Add 20px padding to this container"*
 
 ---
 
-## ⚙️ Available Commands
-
-| Command ID | Title | Description |
-| :--- | :--- | :--- |
-| `antigravity.testContext` | **Test Context Provider** | Verifies that context sharing is working. |
-
----
-
-## ⌨️ Shortcuts
+## ⌨️ Keyboard Shortcuts
 
 | Action | Windows/Linux | Mac |
-| :--- | :--- | :--- |
+|:---|:---|:---|
 | Open Visual Editor | `Ctrl+Shift+V` | `Cmd+Shift+V` |
+
+---
+
+## 🔧 Supported File Types
+
+| Type | Extensions | Notes |
+|:---|:---|:---|
+| HTML | `.html` | Direct DOM editing |
+| React | `.jsx`, `.tsx` | Vite dev server + HMR |
 
 ---
 
 ## 🛡️ Trust & Safety
 
-*   **Diff Preview**: Antigravity never modifies your code silently. All complex changes (like moves or large edits) present a Diff Preview where you can verify the exact lines changing before accepting.
-*   **Non-Destructive**: The extension works by parsing your code's AST, ensuring that structure and formatting are preserved where possible.
+- **Diff Preview**: All changes show in a visual diff before applying
+- **Non-Destructive**: AST-based parsing preserves code structure
+- **Reversible**: Reject changes to revert to original state
+- **Fallback Reload**: If HMR fails, preview auto-refreshes in 2 seconds
+
+---
+
+## 📋 Known Limitations
+
+- Moving elements between different containers is not yet supported
+- React components with very complex conditional rendering may have path matching issues, a rules file is created to inform the AI agent about the preffered way to generate code for compatibility
+- Dev server uses many ports if multiple projects are open
+
+---
+
+## 🗺️ Roadmap
+
+- [ ] Cross-container drag and drop
+- [ ] Component insertion from palette
+- [ ] CSS class editing
+- [ ] Multi-file component support
 
 ---
 
 **Happy Building! 🚀**
-

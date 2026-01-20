@@ -103,7 +103,7 @@ export function parseHTML(content: string): ParseResult {
 }
 
 /**
- * Parse JSX/TSX content into AST
+ * Parse JSX/TSX content into AST with improved node mapping
  */
 export function parseJSX(content: string, isTypeScript: boolean = false): ParseResult {
     console.log('[ASTParser] Parsing JSX content, isTypeScript:', isTypeScript);
@@ -114,9 +114,10 @@ export function parseJSX(content: string, isTypeScript: boolean = false): ParseR
     try {
         const ast = babelParser.parse(content, {
             sourceType: 'module',
-            plugins: isTypeScript
-                ? ['jsx', 'typescript']
-                : ['jsx'],
+            plugins: [
+                'jsx',
+                ...(isTypeScript ? ['typescript'] as const : []),
+            ],
         });
 
         traverse(ast, {
@@ -129,7 +130,13 @@ export function parseJSX(content: string, isTypeScript: boolean = false): ParseR
                 if (openingElement.name.type === 'JSXIdentifier') {
                     tagName = openingElement.name.name;
                 } else if (openingElement.name.type === 'JSXMemberExpression') {
-                    tagName = 'MemberExpression';
+                    // Handle <Member.Expression />
+                    const getMemberName = (node: any): string => {
+                        if (node.type === 'JSXIdentifier') return node.name;
+                        if (node.type === 'JSXMemberExpression') return `${getMemberName(node.object)}.${node.property.name}`;
+                        return 'unknown';
+                    };
+                    tagName = getMemberName(openingElement.name);
                 }
 
                 const id = generateId();
@@ -146,6 +153,9 @@ export function parseJSX(content: string, isTypeScript: boolean = false): ParseR
                 };
 
                 nodeMap.set(id, elementNode);
+
+                // For JSX, we flatten the nodes for simple injection search
+                // but we could also build a tree if needed for other features
                 nodes.push(elementNode);
             },
         });
@@ -191,20 +201,23 @@ function getLineNumber(content: string, position: number): number {
 let lastIdMap = new Map<string, { start: number; end: number; tagName: string }>();
 
 /**
- * Inject data-ag-id attributes into HTML content for element tracking.
+ * Inject data-ag-id attributes into HTML/JSX content for element tracking.
  * Returns the modified content and a map of IDs to positions.
  */
-export function injectElementIds(content: string): {
+export function injectElementIds(content: string, fileName?: string): {
     content: string;
     idMap: Map<string, { start: number; end: number; tagName: string }>;
 } {
-    console.log('[ASTParser] Injecting element IDs');
+    const isJSX = fileName ? (fileName.endsWith('.jsx') || fileName.endsWith('.tsx') || fileName.endsWith('.js') || fileName.endsWith('.ts')) : false;
+    const isTS = fileName ? (fileName.endsWith('.tsx') || fileName.endsWith('.ts')) : false;
+
+    console.log(`[ASTParser] Injecting element IDs (isJSX: ${isJSX}, fileName: ${fileName})`);
 
     const idMap = new Map<string, { start: number; end: number; tagName: string }>();
     let result = content;
 
     // Parse to get element positions
-    const parseResult = parseHTML(content);
+    const parseResult = isJSX ? parseJSX(content, isTS) : parseHTML(content);
 
     // Inject IDs in reverse order to preserve positions
     const allNodes: ElementNode[] = [];
@@ -214,6 +227,8 @@ export function injectElementIds(content: string): {
             collectNodes(child);
         }
     }
+
+    // JSX parser returns flat nodes currently, HTML returns tree. Both work with this.
     for (const node of parseResult.nodes) {
         collectNodes(node);
     }
@@ -222,21 +237,33 @@ export function injectElementIds(content: string): {
     allNodes.sort((a, b) => b.start - a.start);
 
     for (const node of allNodes) {
-        // Skip doctype, html, head, body - these are structural
-        if (['!doctype', 'html', 'head', 'body', 'meta', 'link', 'script', 'style', 'title'].includes(node.tagName)) {
+        // Skip structural HTML tags
+        if (!isJSX && ['!doctype', 'html', 'head', 'body', 'meta', 'link', 'script', 'style', 'title'].includes(node.tagName)) {
             continue;
         }
 
         // Find the position to inject the attribute (right after tag name)
         const tagStart = node.start;
         const searchContent = result.substring(tagStart);
-        const match = searchContent.match(new RegExp(`^<${node.tagName}(\\s|>|/>)`, 'i'));
+
+        // Match <tagName or <tagName followed by space/newline/bracket
+        // Be careful with JSX components or namespaced tags
+        const tagNameEscaped = node.tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const match = searchContent.match(new RegExp(`^<${tagNameEscaped}(\\s|>|/>|\\n)`, 'i'));
 
         if (match) {
             const insertPos = tagStart + match[0].length - 1;
+
+            // Check if we already have an ID or if it's a Fragment
+            if (node.tagName === 'Fragment' || node.tagName === '' || result.substring(tagStart, tagStart + 2) === '<>') {
+                continue; // Skip fragments
+            }
+
             const id = node.id;
             const injection = ` data-ag-id="${id}"`;
 
+            // For JSX, we insert before the closing bracket of the opening tag
+            // The match already finds the start of the tag, we just need to ensure we don't break JSX syntax
             result = result.substring(0, insertPos) + injection + result.substring(insertPos);
 
             // Store mapping

@@ -14,6 +14,19 @@
             "preLaunchTask": "npm: watch"
         },
         {
+            "name": "Run Extension (Dummy React)",
+            "type": "extensionHost",
+            "request": "launch",
+            "args": [
+                "c:/Users/kabir/Desktop/dummy react",
+                "--extensionDevelopmentPath=${workspaceFolder}"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/dist/**/*.js"
+            ],
+            "preLaunchTask": "npm: watch"
+        },
+        {
             "name": "Run Extension (No Watch)",
             "type": "extensionHost",
             "request": "launch",

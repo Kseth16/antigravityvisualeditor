@@ -5,6 +5,7 @@ interface PreviewOptions {
   content?: string;
   url?: string;
   editMode: boolean;
+  fileName?: string;
 }
 
 export function getPreviewHtml(
@@ -91,12 +92,12 @@ function getNonce(): string {
  * Process HTML content for preview: inject data-ag-id attributes for element tracking
  * Uses AST-based parsing for reliable element identification
  */
-export function processHtmlForPreview(html: string): string {
+export function processHtmlForPreview(html: string, fileName?: string): string {
   try {
     // Dynamically import to avoid circular dependencies
     const { injectElementIds } = require('../parser/ASTParser');
-    console.log('[previewHtml] Using AST-based element ID injection');
-    const result = injectElementIds(html);
+    console.log(`[previewHtml] Using AST-based element ID injection for ${fileName || 'unnamed file'}`);
+    const result = injectElementIds(html, fileName);
     return result.content;
   } catch (error) {
     console.error('[previewHtml] AST injection failed, returning original:', error);

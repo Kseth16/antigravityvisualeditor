@@ -6,6 +6,13 @@
 (function () {
     const vscode = acquireVsCodeApi();
 
+    // Forward logs to host for debugging
+    const originalLog = console.log;
+    console.log = (...args) => {
+        originalLog(...args);
+        vscode.postMessage({ type: 'log', args: args });
+    };
+
     // State
     let selectedElement = null;
     let hoveredElement = null;
@@ -44,11 +51,16 @@
         if (isIframe) {
             const iframe = document.getElementById('preview-frame');
             iframe.addEventListener('load', () => {
+                console.log('[Preview] Iframe loaded, attempting access...');
                 try {
-                    targetDocument = iframe.contentDocument || iframe.contentWindow.document;
+                    // Try to access contentDocument - this should fail for cross-origin
+                    const doc = iframe.contentDocument || iframe.contentWindow.document;
+                    console.log('[Preview] Iframe access SUCCESS (Unexpected for localhost)');
+                    targetDocument = doc;
                     setupEventListeners();
                 } catch (e) {
-                    console.error('Cannot access iframe:', e);
+                    console.error('[Preview] Iframe access BLOCKED (Expected for localhost):', e);
+                    console.log('[Preview] Switching to Bridge Mode communication');
                 }
             });
         } else {
@@ -60,6 +72,13 @@
         createStylePanel();
 
         window.addEventListener('message', handleMessage);
+
+        // Debug: Log all global clicks
+        document.addEventListener('click', (e) => {
+            console.log('[Preview] GLOBAL CLICK caught on:', e.target.tagName, e.target.id, e.target.className);
+            // Check if we hit the iframe (should not happen if overlay blocks) or overlays
+        }, true); // Capture phase to ensure we see it first
+
         document.addEventListener('click', onDocumentClick);
     }
 
@@ -84,18 +103,34 @@
     function createContextToolbar() {
         contextToolbar.innerHTML = `
             <button id="ctx-edit" title="Edit Styles">✏️</button>
-            <button id="ctx-rearrange" title="Rearrange">↕️</button>
+            <button id="ctx-rearrange" title="Drag to Rearrange">↕️</button>
             <span class="separator"></span>
-            <button id="ctx-parent" title="Select Parent">⬆️</button>
+            <button id="ctx-parent" title="Select Parent">🔝</button>
             <button id="ctx-duplicate" title="Duplicate">📋</button>
             <button id="ctx-delete" class="danger" title="Delete">🗑️</button>
         `;
 
-        document.getElementById('ctx-edit').addEventListener('click', toggleStylePanel);
-        document.getElementById('ctx-rearrange').addEventListener('click', () => startDragMode('rearrange'));
-        document.getElementById('ctx-parent').addEventListener('click', selectParentElement);
-        document.getElementById('ctx-duplicate').addEventListener('click', duplicateElement);
-        document.getElementById('ctx-delete').addEventListener('click', deleteElement);
+        // Use event delegation to persist listeners even if innerHTML changes
+        contextToolbar.addEventListener('click', (e) => {
+            const btn = e.target.closest('button');
+            if (!btn) return;
+
+            console.log('[Preview] Delegated Toolbar Click:', btn.id);
+            // Stop propagation to prevent selecting the toolbar itself or underlying elements
+            e.stopPropagation();
+
+            if (btn.id === 'ctx-edit') toggleStylePanel();
+            else if (btn.id === 'ctx-rearrange') startDragMode('rearrange');
+            else if (btn.id === 'ctx-parent') selectParentElement();
+            else if (btn.id === 'ctx-duplicate') {
+                console.log('[Preview] Delegated Duplicate Action');
+                duplicateElement();
+            }
+            else if (btn.id === 'ctx-delete') {
+                console.log('[Preview] Delegated Delete Action');
+                deleteElement();
+            }
+        });
     }
 
     function showContextToolbar(element) {
@@ -124,9 +159,26 @@
     }
 
     function startDragMode(mode) {
-        currentDragMode = mode;
-        showModeToast('↕️ Drag to rearrange');
-        document.getElementById('ctx-rearrange').classList.toggle('active', mode === 'rearrange');
+        const wasActive = currentDragMode === mode;
+        currentDragMode = wasActive ? null : mode;
+
+        // Toggle button state
+        document.getElementById('ctx-rearrange').classList.toggle('active', currentDragMode === 'rearrange');
+
+        // Notify bridge to enter/exit drag mode (for iframe elements)
+        if (isIframe) {
+            const iframe = document.getElementById('preview-frame');
+            iframe?.contentWindow?.postMessage({
+                type: 'bridgeAction',
+                action: currentDragMode ? 'enterDragMode' : 'exitDragMode'
+            }, '*');
+        }
+
+        if (currentDragMode) {
+            showModeToast('↕️ Click and drag to rearrange');
+        } else {
+            showModeToast('✖️ Drag mode cancelled');
+        }
     }
 
     function showModeToast(message) {
@@ -492,14 +544,20 @@
         // Reset pending changes buffer for new element
         resetPendingChanges();
 
-        const computed = window.getComputedStyle(selectedElement);
+        let computed;
+        if (selectedElement instanceof Element) {
+            computed = window.getComputedStyle(selectedElement);
+        } else {
+            // Use proxied styles from bridge (msg.data.styles)
+            computed = selectedElement.style || {};
+        }
 
         // Capture original styles for Cancel functionality
         originalStyles = {
             fontSize: computed.fontSize,
             fontWeight: computed.fontWeight,
             fontStyle: computed.fontStyle,
-            textDecoration: computed.textDecoration,
+            textDecoration: computed.textDecoration || 'none',
             color: computed.color,
             backgroundColor: computed.backgroundColor,
             paddingTop: computed.paddingTop,
@@ -514,31 +572,34 @@
             borderStyle: computed.borderStyle,
             borderColor: computed.borderColor,
             borderRadius: computed.borderRadius,
-            textContent: selectedElement.textContent
+            textContent: selectedElement instanceof Element ? selectedElement.textContent : selectedElement.textContent
         };
 
         // Populate Content textarea with element text
-        document.getElementById('style-text-content').value = selectedElement.textContent || '';
+        const contentVal = selectedElement instanceof Element ? selectedElement.textContent : selectedElement.textContent;
+        document.getElementById('style-text-content').value = contentVal || '';
 
         // Font
         document.getElementById('style-font-size').value = parseInt(computed.fontSize) || '';
 
         // Style toggles
-        document.getElementById('style-bold').classList.toggle('active',
-            computed.fontWeight === 'bold' || parseInt(computed.fontWeight) >= 700);
-        document.getElementById('style-italic').classList.toggle('active',
-            computed.fontStyle === 'italic');
-        document.getElementById('style-underline').classList.toggle('active',
-            computed.textDecoration.includes('underline'));
+        const isBold = computed.fontWeight === 'bold' || parseInt(computed.fontWeight) >= 700;
+        document.getElementById('style-bold').classList.toggle('active', isBold);
+
+        const isItalic = computed.fontStyle === 'italic';
+        document.getElementById('style-italic').classList.toggle('active', isItalic);
+
+        const isUnderline = (computed.textDecoration || '').includes('underline');
+        document.getElementById('style-underline').classList.toggle('active', isUnderline);
 
         // Colors
         document.getElementById('style-color-text').value = rgbToHex(computed.color);
         try { document.getElementById('style-color').value = rgbToHex(computed.color); } catch (e) { }
 
         document.getElementById('style-bg-color-text').value =
-            computed.backgroundColor === 'rgba(0, 0, 0, 0)' ? 'transparent' : rgbToHex(computed.backgroundColor);
+            computed.backgroundColor === 'rgba(0, 0, 0, 0)' || computed.backgroundColor === 'transparent' ? 'transparent' : rgbToHex(computed.backgroundColor);
         try {
-            if (computed.backgroundColor !== 'rgba(0, 0, 0, 0)') {
+            if (computed.backgroundColor !== 'rgba(0, 0, 0, 0)' && computed.backgroundColor !== 'transparent') {
                 document.getElementById('style-bg-color').value = rgbToHex(computed.backgroundColor);
             }
         } catch (e) { }
@@ -563,14 +624,29 @@
         document.getElementById('style-border-radius').value = parseInt(computed.borderRadius) || '';
 
         // Custom CSS - show inline style attribute
-        document.getElementById('style-custom-css').value = selectedElement.getAttribute('style') || '';
+        const inlineStyle = selectedElement instanceof Element ? selectedElement.getAttribute('style') : '';
+        document.getElementById('style-custom-css').value = inlineStyle || '';
     }
 
     function applyStyle(property, value) {
         if (!selectedElement) return;
 
-        // Apply to preview immediately (visual feedback)
-        selectedElement.style[property] = value;
+        // Apply to preview immediately (visual feedback) if possible
+        if (selectedElement instanceof Element) {
+            selectedElement.style[property] = value;
+        } else {
+            // Forward to bridge for optimistic style update
+            const iframe = document.getElementById('preview-frame');
+            iframe?.contentWindow?.postMessage({
+                type: 'bridgeAction',
+                action: 'applyStyle',
+                agId: getElementId(selectedElement),
+                path: getElementPath(selectedElement),
+                property: property,
+                value: value
+            }, '*');
+        }
+
 
         // Buffer the change instead of sending
         pendingStyleChanges[property] = value;
@@ -587,7 +663,9 @@
             const [prop, val] = decl.split(':').map(s => s.trim());
             if (prop && val) {
                 const camelProp = kebabToCamel(prop);
-                selectedElement.style[camelProp] = val;
+                if (selectedElement instanceof Element) {
+                    selectedElement.style[camelProp] = val;
+                }
                 // Buffer this change too
                 pendingStyleChanges[camelProp] = val;
             }
@@ -624,6 +702,20 @@
         const batch = { styles: changes };
         if (pendingTextContent !== null) {
             batch.textContent = pendingTextContent;
+
+            if (selectedElement instanceof Element) {
+                selectedElement.textContent = pendingTextContent;
+            } else {
+                // Forward text update to bridge if pending
+                const iframe = document.getElementById('preview-frame');
+                iframe?.contentWindow?.postMessage({
+                    type: 'bridgeAction',
+                    action: 'applyText',
+                    agId: getElementId(selectedElement),
+                    path: getElementPath(selectedElement),
+                    value: pendingTextContent
+                }, '*');
+            }
         }
 
         // Send batch to extension
@@ -649,7 +741,7 @@
         // Revert all style changes to original
         if (hasPendingChanges) {
             for (const property in originalStyles) {
-                if (property !== 'textContent') {
+                if (property !== 'textContent' && selectedElement instanceof Element) {
                     selectedElement.style[property] = originalStyles[property];
                 }
             }
@@ -697,27 +789,37 @@
             return;
         }
 
-        console.log('[Preview] duplicateElement:', {
-            //     element: selectedElement.tagName,
-            //     path: getElementPath(selectedElement)
-            // });
+        console.log('[Preview] duplicateElement CALLED. Tag:', selectedElement.tagName);
+        const path = getElementPath(selectedElement);
+        const agId = getElementId(selectedElement);
 
-            const clone = selectedElement.cloneNode(true);
-            selectedElement.parentNode.insertBefore(clone, selectedElement.nextSibling);
+        // Handle Proxy Object (React/Bridge)
+        if (selectedElement.path) {
+            console.log('[Preview] duplicateElement: Proxy mode. Path:', path, 'AgId:', agId);
 
             vscode.postMessage({
                 type: 'elementDuplicated',
-                data: {
-                    path: getElementPath(selectedElement),
-                    agId: getElementId(selectedElement)
-                }
+                data: { path, agId }
             });
-
-            // console.log('[Preview] duplicateElement: Sent message to extension');
             showModeToast('📋 Element duplicated');
+            return;
+        }
 
-        // Select the new element
-        setTimeout(() => selectElement(clone), 50);
+        // Handle Static HTML (DOM Element)
+        if (selectedElement instanceof Element) {
+            console.log('[Preview] duplicateElement: Static DOM mode');
+
+            // Optimistic update
+            const clone = selectedElement.cloneNode(true);
+            selectedElement.parentNode.insertBefore(clone, selectedElement.nextSibling);
+            setTimeout(() => selectElement(clone), 50);
+
+            vscode.postMessage({
+                type: 'elementDuplicated',
+                data: { path, agId }
+            });
+            showModeToast('📋 Element duplicated');
+        }
     }
 
     function deleteElement() {
@@ -726,24 +828,41 @@
             return;
         }
 
+        console.log('[Preview] deleteElement CALLED. Tag:', selectedElement.tagName);
         const path = getElementPath(selectedElement);
         const agId = getElementId(selectedElement);
-        console.log('[Preview] deleteElement:', {
-            element: selectedElement.tagName,
-            path: path,
-            agId: agId
-        });
 
-        selectedElement.remove();
+        // Handle Proxy Object (React/Bridge)
+        if (selectedElement.path) {
+            console.log('[Preview] deleteElement: Proxy mode. Path:', path, 'AgId:', agId);
 
-        vscode.postMessage({
-            type: 'elementDeleted',
-            data: { path: path, agId: agId }
-        });
+            // Hide toolbars immediately
+            hideContextToolbar();
+            deselectElement();
 
-        // console.log('[Preview] deleteElement: Sent message to extension');
-        showModeToast('🗑️ Element deleted');
-        deselectElement();
+            vscode.postMessage({
+                type: 'elementDeleted',
+                data: { path, agId }
+            });
+            showModeToast('🗑️ Element deleted');
+            return;
+        }
+
+        // Handle Static HTML (DOM Element)
+        if (selectedElement instanceof Element) {
+            console.log('[Preview] deleteElement: Static DOM mode');
+
+            // Optimistic update
+            selectedElement.remove();
+            hideContextToolbar();
+            deselectElement();
+
+            vscode.postMessage({
+                type: 'elementDeleted',
+                data: { path, agId }
+            });
+            showModeToast('🗑️ Element deleted');
+        }
     }
 
     function selectParentElement() {
@@ -753,12 +872,26 @@
         }
 
         const parent = selectedElement.parentElement;
+        const parentPath = selectedElement.parentPath || (parent ? getElementPath(parent) : null);
+
         console.log('[Preview] selectParentElement:', {
             currentElement: selectedElement.tagName,
             currentPath: getElementPath(selectedElement),
             parentElement: parent?.tagName,
-            parentPath: parent ? getElementPath(parent) : null
+            parentPath: parentPath
         });
+
+        // Handle Bridge Mode Parent Selection
+        if (!(selectedElement instanceof Element) && parentPath) {
+            console.log('[Preview] selectParentElement: Proxy mode, requesting parent from bridge');
+            const iframe = document.getElementById('preview-frame');
+            iframe?.contentWindow?.postMessage({
+                type: 'bridgeAction',
+                action: 'selectParent',
+                path: parentPath
+            }, '*');
+            return;
+        }
 
         // Don't select body, html, or preview container
         if (!parent ||
@@ -848,30 +981,52 @@
     function onMouseDown(e) {
         if (!currentDragMode || !selectedElement) return;
 
+        // In Bridge mode, we might be clicking the selection overlay handle
         const target = getSelectableElement(e.target);
-        if (target !== selectedElement) return;
+        const isOverlayClick = e.target === selectionOverlay || selectionOverlay.contains(e.target);
+
+        if (target !== selectedElement && !isOverlayClick) return;
 
         isDragging = true;
         draggedElement = selectedElement;
         dragStartPos = { x: e.clientX, y: e.clientY };
 
+        const isProxy = !(draggedElement instanceof Element);
+
         // Make dragged element semi-transparent
-        draggedElement.style.opacity = '0.5';
-        draggedElement.style.outline = '2px dashed #0e639c';
+        if (isProxy) {
+            // For React: send startDrag to bridge 
+            const iframe = document.getElementById('preview-frame');
+            iframe?.contentWindow?.postMessage({
+                type: 'bridgeAction',
+                action: 'startDrag'
+            }, '*');
+        } else {
+            draggedElement.style.opacity = '0.5';
+            draggedElement.style.outline = '2px dashed #0e639c';
+        }
 
         if (currentDragMode === 'move') {
-            const computed = window.getComputedStyle(draggedElement);
-            if (computed.position === 'static') {
-                draggedElement.style.position = 'relative';
+            if (isProxy) {
+                // Moving absolute elements in React not fully supported yet via drag
+                // but we at least shouldn't crash.
+                elementStartPos = { x: 0, y: 0 };
+            } else {
+                const computed = window.getComputedStyle(draggedElement);
+                if (computed.position === 'static') {
+                    draggedElement.style.position = 'relative';
+                }
+                elementStartPos = {
+                    x: parseFloat(computed.left) || 0,
+                    y: parseFloat(computed.top) || 0
+                };
             }
-            elementStartPos = {
-                x: parseFloat(computed.left) || 0,
-                y: parseFloat(computed.top) || 0
-            };
         } else if (currentDragMode === 'rearrange') {
             // Store original position for live preview
-            originalParent = draggedElement.parentElement;
-            originalNextSibling = draggedElement.nextElementSibling;
+            if (!isProxy) {
+                originalParent = draggedElement.parentElement;
+                originalNextSibling = draggedElement.nextElementSibling;
+            }
             hasMovedFromOriginal = false;
         }
 
@@ -896,10 +1051,13 @@
         if (!isDragging || !draggedElement) return;
 
         if (currentDragMode === 'move') {
-            const computed = window.getComputedStyle(draggedElement);
-            sendStyleChange('position', 'relative');
-            sendStyleChange('left', computed.left);
-            sendStyleChange('top', computed.top);
+            const isProxy = !(draggedElement instanceof Element);
+            if (!isProxy) {
+                const computed = window.getComputedStyle(draggedElement);
+                sendStyleChange('position', 'relative');
+                sendStyleChange('left', computed.left);
+                sendStyleChange('top', computed.top);
+            }
         } else if (currentDragMode === 'rearrange' && hasMovedFromOriginal) {
             // Element was moved, notify extension to update source code
             finalizeRearrange();
@@ -913,7 +1071,20 @@
     // ===========================================
 
     function liveRearrange(mouseY) {
-        if (!draggedElement || !draggedElement.parentElement) return;
+        if (!draggedElement) return;
+
+        // Bridge Mode: Delegate to iframe
+        if (!(draggedElement instanceof Element)) {
+            const iframe = document.getElementById('preview-frame');
+            iframe?.contentWindow?.postMessage({
+                type: 'bridgeAction',
+                action: 'liveRearrange',
+                mouseY: mouseY
+            }, '*');
+            return;
+        }
+
+        if (!draggedElement.parentElement) return;
 
         const parent = draggedElement.parentElement;
 
@@ -1004,23 +1175,27 @@
         );
     }
 
+
     function finalizeRearrange() {
         if (!draggedElement) return;
 
-        const finalIndex = getElementIndex(draggedElement);
+        const isProxy = !(draggedElement instanceof Element);
+        const finalIndex = isProxy ? (draggedElement.newIndex ?? 0) : getElementIndex(draggedElement);
         const elementTag = draggedElement.tagName;
-        const parentTag = draggedElement.parentElement?.tagName;
+        const parentTag = !isProxy ? draggedElement.parentElement?.tagName : 'PARENT';
 
         console.log('[Preview] FINALIZING - Element:', elementTag, '| Final Index:', finalIndex, '| Parent:', parentTag);
-        console.log('[Preview] Element path:', getElementPath(draggedElement));
-        console.log('[Preview] Parent path:', getElementPath(draggedElement.parentElement));
+
+        const path = isProxy ? (draggedElement.path) : getElementPath(draggedElement);
+        const agId = getElementId(draggedElement);
 
         // Send message to extension to update source code with new position
         vscode.postMessage({
             type: 'elementMoved',
             data: {
-                path: getElementPath(draggedElement),
-                newParentPath: getElementPath(draggedElement.parentElement),
+                path: path,
+                agId: agId,
+                newParentPath: !isProxy ? getElementPath(draggedElement.parentElement) : draggedElement.parentPath,
                 newIndex: finalIndex,
                 moveType: 'rearrange'
             }
@@ -1072,8 +1247,18 @@
         document.getElementById('pos-info')?.remove();
 
         if (draggedElement) {
-            draggedElement.style.opacity = '';
-            draggedElement.style.outline = '';
+            const isProxy = !(draggedElement instanceof Element);
+            if (isProxy) {
+                // For React: send endDrag to bridge
+                const iframe = document.getElementById('preview-frame');
+                iframe?.contentWindow?.postMessage({
+                    type: 'bridgeAction',
+                    action: 'endDrag'
+                }, '*');
+            } else {
+                draggedElement.style.opacity = '';
+                draggedElement.style.outline = '';
+            }
             updateSelectionOverlay(draggedElement);
             showContextToolbar(draggedElement);
         }
@@ -1103,11 +1288,15 @@
         // });
 
         if (selectedElement) {
-            selectedElement.removeAttribute('data-antigravity-selected');
-            selectedElement.removeAttribute('contenteditable');
+            if (selectedElement instanceof Element) {
+                selectedElement.removeAttribute('data-antigravity-selected');
+                selectedElement.removeAttribute('contenteditable');
+            }
         }
         selectedElement = element;
-        element.setAttribute('data-antigravity-selected', 'true');
+        if (selectedElement instanceof Element) {
+            element.setAttribute('data-antigravity-selected', 'true');
+        }
         updateSelectionOverlay(element);
         showContextToolbar(element);
         sendElementSelected(element);
@@ -1120,8 +1309,10 @@
 
     function deselectElement() {
         if (selectedElement) {
-            selectedElement.removeAttribute('data-antigravity-selected');
-            selectedElement.removeAttribute('contenteditable');
+            if (selectedElement instanceof Element) {
+                selectedElement.removeAttribute('data-antigravity-selected');
+                selectedElement.removeAttribute('contenteditable');
+            }
         }
         selectedElement = null;
         selectionOverlay.style.display = 'none';
@@ -1174,7 +1365,16 @@
     }
 
     function getElementRect(element) {
-        const rect = element.getBoundingClientRect();
+        let rect;
+        if (element instanceof Element) {
+            rect = element.getBoundingClientRect();
+        } else if (element && element.rect) {
+            // Bridge Mode: use stored rect from proxy
+            rect = element.rect;
+        } else {
+            return { top: 0, left: 0, width: 0, height: 0 };
+        }
+
         const containerRect = previewContainer.getBoundingClientRect();
         return {
             top: rect.top - containerRect.top + previewContainer.scrollTop,
@@ -1185,6 +1385,9 @@
     }
 
     function getElementPath(element) {
+        if (element.path) return element.path; // Proxy object from bridge
+        if (!element || !element.tagName) return ''; // Invalid element
+
         const path = [];
         let current = element;
         while (current && current !== targetDocument.body) {
@@ -1213,15 +1416,21 @@
      * This is the reliable way to track elements back to source code.
      */
     function getElementId(element) {
-        // First check the element itself
+        if (!element) return null;
+
+        // Handle Proxy Object (msg.data.agId)
         if (element.dataset && element.dataset.agId) {
             return element.dataset.agId;
         }
-        // Check closest ancestor with data-ag-id
-        const closest = element.closest('[data-ag-id]');
-        if (closest && closest.dataset.agId) {
-            return closest.dataset.agId;
+
+        // Handle DOM Element
+        if (element instanceof Element) {
+            const closest = element.closest('[data-ag-id]');
+            if (closest && closest.dataset.agId) {
+                return closest.dataset.agId;
+            }
         }
+
         return null;
     }
 
@@ -1284,13 +1493,181 @@
 
     function handleMessage(event) {
         const msg = event.data;
+
+        // --- Bridge Messages (from React App) ---
+        if (msg.type === 'bridgeAction') {
+            console.log('[Preview] Received bridgeAction:', msg.action);
+            if (msg.action === 'duplicate') {
+                duplicateElement();
+            } else if (msg.action === 'delete') {
+                deleteElement();
+            }
+            return;
+        }
+
+        if (msg.type === 'bridgeElementSelected') {
+            console.log('[Preview] Bridge Selected:', msg.data.tagName);
+
+            // Reconstruct the "selected element" state using the data from bridge
+            // We can't hold a reference to the DOM element (it's in the iframe),
+            // but we can fake it for the purpose of the UI or just pass the data through.
+
+            // Update UI overlays using the rect provided by the bridge
+            // Note: The rect is relative to the iframe's viewport. 
+            // We might need to offset it by the iframe's position if not full screen.
+            // But here the iframe is full screen #preview-frame.
+
+            const rect = msg.data.rect;
+
+            // Mock a selected element for the UI state
+            // We create a proxy object to store the data
+            selectedElement = {
+                tagName: msg.data.tagName,
+                id: msg.data.id,
+                className: msg.data.className,
+                textContent: msg.data.textContent,
+                style: msg.data.styles, // Read-only view of styles
+                dataset: { agId: msg.data.agId },
+                path: msg.data.path,
+                parentPath: msg.data.parentPath,
+                rect: msg.data.rect, // Store the rect for positioning
+                getAttribute: (name) => {
+                    if (name === 'data-ag-id') return msg.data.agId;
+                    return null;
+                }
+            };
+
+            // Update Overlay manually - NO, bridge does this now internally for zero latency
+            // updateSelectionOverlayFromRect(rect, msg.data.tagName);
+
+            // Send to extension
+            vscode.postMessage({
+                type: 'elementSelected',
+                data: msg.data
+            });
+
+            // Show toolbar - we still show this externally for now
+            showContextToolbarFromRect(rect);
+            return;
+        }
+
+        if (msg.type === 'bridgeElementHovered') {
+            // Handle hover from bridge - bridge handles overlay internally
+            return;
+        }
+
+        if (msg.type === 'bridgeAction') {
+            // Handle bridge results
+            if (msg.action === 'selectParent') {
+                // The bridge already sent bridgeElementSelected, so we just log
+                console.log('[Preview] Bridge Parent Selected');
+            } else if (msg.action === 'rearrangeUpdate') {
+                // Update local tracking during interactive drag
+                if (selectedElement && !(selectedElement instanceof Element)) {
+                    selectedElement.path = msg.data.path;
+                    selectedElement.newIndex = msg.data.newIndex;
+                    hasMovedFromOriginal = true;
+                    // Update visuals for the dummy dragged element
+                    updateSelectionOverlayFromRect(selectedElement.rect, selectedElement.tagName);
+                    showContextToolbarFromRect(selectedElement.rect);
+                }
+            }
+            return;
+        }
+
+        // --- Extension Messages ---
         if (msg.type === 'contentUpdate' && !isIframe) {
             const content = document.getElementById('preview-content');
             if (content) content.innerHTML = msg.content;
         } else if (msg.type === 'highlightElement') {
             const el = targetDocument.querySelector(msg.path);
             if (el) selectElement(el);
+        } else if (msg.type === 'optimisticDuplicate' || msg.type === 'optimisticDelete') {
+            // Forward optimistic updates to bridge
+            if (isIframe) {
+                const iframe = document.getElementById('preview-frame');
+                iframe?.contentWindow?.postMessage(msg, '*');
+            }
+        } else if (msg.type === 'bridgeDragEnd') {
+            // Handle drag end from bridge
+            console.log('[Preview] bridgeDragEnd received:', msg.data);
+            if (selectedElement && !(selectedElement instanceof Element)) {
+                // Update local state
+                selectedElement.path = msg.data.path;
+                selectedElement.newIndex = msg.data.newIndex;
+                hasMovedFromOriginal = true;
+
+                // Finalize rearrangement - send to extension
+                vscode.postMessage({
+                    type: 'elementMoved',
+                    data: {
+                        path: msg.data.path,
+                        agId: selectedElement.dataset?.agId,
+                        newParentPath: selectedElement.parentPath,
+                        newIndex: msg.data.newIndex,
+                        moveType: 'rearrange'
+                    }
+                });
+
+                showModeToast('✓ Element repositioned');
+            }
+
+            // Reset drag state
+            isDragging = false;
+            currentDragMode = null;
+            draggedElement = null;
+            document.getElementById('ctx-rearrange')?.classList.remove('active');
+        } else if (msg.type === 'forceReload') {
+            // Force reload the iframe to sync with source code
+            console.log('[Preview] Force reload triggered');
+            const iframe = document.getElementById('preview-frame');
+            if (iframe && iframe.src) {
+                iframe.src = iframe.src;
+            }
         }
+    }
+
+    function updateSelectionOverlayFromRect(rect, tagName) {
+        const scrollTop = previewContainer.scrollTop;
+        const scrollLeft = previewContainer.scrollLeft;
+
+        selectionOverlay.style.display = 'block';
+        selectionOverlay.style.top = (rect.top + scrollTop) + 'px';
+        selectionOverlay.style.left = (rect.left + scrollLeft) + 'px';
+        selectionOverlay.style.width = rect.width + 'px';
+        selectionOverlay.style.height = rect.height + 'px';
+        selectionOverlay.setAttribute('data-tag', tagName.toLowerCase());
+    }
+
+    function updateHoverOverlayFromRect(rect) {
+        const scrollTop = previewContainer.scrollTop;
+        const scrollLeft = previewContainer.scrollLeft;
+
+        hoverOverlay.style.display = 'block';
+        hoverOverlay.style.top = (rect.top + scrollTop) + 'px';
+        hoverOverlay.style.left = (rect.left + scrollLeft) + 'px';
+        hoverOverlay.style.width = rect.width + 'px';
+        hoverOverlay.style.height = rect.height + 'px';
+    }
+
+    function showContextToolbarFromRect(rect) {
+        const scrollTop = previewContainer.scrollTop;
+        const scrollLeft = previewContainer.scrollLeft;
+
+        // Position above the element, centered
+        const toolbarHeight = 36;
+        const gap = 8;
+
+        let top = rect.top + scrollTop - toolbarHeight - gap;
+        let left = rect.left + scrollLeft + rect.width / 2;
+
+        if (top < 10) {
+            top = rect.top + scrollTop + rect.height + gap;
+        }
+
+        contextToolbar.style.top = top + 'px';
+        contextToolbar.style.left = left + 'px';
+        contextToolbar.classList.add('visible');
     }
 
     init();

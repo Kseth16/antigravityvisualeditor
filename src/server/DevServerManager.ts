@@ -8,28 +8,47 @@ export class DevServerManager {
     private _workspacePath: string;
     private _port: number = 5173; // Default Vite port
     private _serverType: 'vite' | 'cra' | 'next' | 'unknown' = 'unknown';
+    private _isStarting: boolean = false;
+    private _currentUrl: string | null = null;
 
     constructor(workspacePath: string) {
         this._workspacePath = workspacePath;
     }
 
     public async start(): Promise<string> {
+        if (this._isStarting) {
+            // Wait for existing startup
+            return new Promise((resolve, reject) => {
+                const check = setInterval(() => {
+                    if (this._currentUrl) {
+                        clearInterval(check);
+                        resolve(this._currentUrl);
+                    }
+                }, 100);
+                setTimeout(() => { clearInterval(check); reject(new Error('Timeout waiting for dev server')); }, 30000);
+            });
+        }
+
+        if (this._process && !this._process.killed) {
+            return this._currentUrl || `http://localhost:${this._port}`;
+        }
+
+        this._isStarting = true;
         await this._detectServerType();
 
         if (this._serverType === 'unknown') {
+            this._isStarting = false;
             throw new Error('Could not detect project type. Make sure package.json exists.');
         }
 
-        // Check if server is already running
-        if (await this._isPortInUse(this._port)) {
-            console.log(`Dev server already running on port ${this._port}`);
-            return `http://localhost:${this._port}`;
-        }
+        // We don't check port in use here, let Vite/Next pick its own port 
+        // and we'll parse it from stdout. This is much more robust than 
+        // trying to guess or hijack.
 
         return new Promise((resolve, reject) => {
             const command = this._getStartCommand();
 
-            vscode.window.showInformationMessage(`Starting ${this._serverType} dev server...`);
+            console.log(`[DevServer] Starting ${this._serverType} in ${this._workspacePath}`);
 
             this._process = cp.spawn(command.cmd, command.args, {
                 cwd: this._workspacePath,
@@ -40,6 +59,7 @@ export class DevServerManager {
             let serverStarted = false;
             const timeout = setTimeout(() => {
                 if (!serverStarted) {
+                    this._isStarting = false;
                     reject(new Error('Dev server startup timeout'));
                 }
             }, 30000);
@@ -48,31 +68,46 @@ export class DevServerManager {
                 const output = data.toString();
                 console.log('[DevServer]', output);
 
-                // Check for server ready messages
-                if (
-                    output.includes('Local:') ||
-                    output.includes('localhost:') ||
-                    output.includes('ready in') ||
-                    output.includes('compiled successfully')
-                ) {
+                // Check for server ready messages and parse port
+                // Common pattern: Local: http://localhost:5173/
+                const portMatch = output.match(/Local:\s+http:\/\/localhost:(\d+)/i) ||
+                    output.match(/localhost:(\d+)/i);
+
+                if (portMatch && !serverStarted) {
+                    const actualPort = parseInt(portMatch[1]);
+                    this._port = actualPort;
+                    this._currentUrl = `http://localhost:${this._port}`;
+                    serverStarted = true;
+                    this._isStarting = false;
+                    clearTimeout(timeout);
+                    resolve(this._currentUrl);
+                }
+
+                // Fallback for generic "ready" signals if port not found in this chunk
+                if (output.includes('ready in') || output.includes('compiled successfully')) {
                     if (!serverStarted) {
-                        serverStarted = true;
-                        clearTimeout(timeout);
-                        resolve(`http://localhost:${this._port}`);
+                        setTimeout(() => {
+                            if (serverStarted) return;
+                            serverStarted = true;
+                            this._isStarting = false;
+                            this._currentUrl = `http://localhost:${this._port}`;
+                            clearTimeout(timeout);
+                            resolve(this._currentUrl);
+                        }, 500);
                     }
                 }
             });
 
             this._process.stderr?.on('data', (data: Buffer) => {
-                console.error('[DevServer Error]', data.toString());
-            });
-
-            this._process.on('error', (err) => {
-                clearTimeout(timeout);
-                reject(err);
+                const err = data.toString();
+                console.error('[DevServer Error]', err);
             });
 
             this._process.on('exit', (code) => {
+                console.log(`[DevServer] Process exited with code ${code}`);
+                this._isStarting = false;
+                this._currentUrl = null;
+                this._process = null;
                 if (!serverStarted) {
                     clearTimeout(timeout);
                     reject(new Error(`Dev server exited with code ${code}`));

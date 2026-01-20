@@ -22,43 +22,36 @@ export class CodeSync {
         console.log('[CodeSync] applyTextEdit:', { elementPath, newText });
 
         const content = document.getText();
+        const isReact = document.languageId === 'javascriptreact' || document.languageId === 'typescriptreact';
 
-        // Extract tag name and identifiers from path
-        const pathInfo = this.parseElementPath(elementPath);
-        console.log('[CodeSync] Parsed path:', pathInfo);
+        if (isReact) {
+            const parser = new ReactParser(content, document.languageId === 'typescriptreact');
+            const cleanPath = this.sanitizePath(elementPath); // Sanitize path for React
+            const element = parser.findElementByPath(cleanPath);
 
-        if (!pathInfo) {
-            vscode.window.showErrorMessage('Could not parse element path');
+            if (!element) {
+                vscode.window.showErrorMessage('Could not find element to edit in React file');
+                return false;
+            }
+
+            const newContent = parser.applyTextEdit(element, newText);
+            return await this.applyEdit(document, content, newContent, 'Text Edit (React)');
+        }
+
+        // HTML Logic
+        const parser = new HtmlParser(content);
+        // Sanitize path (remove #preview-content)
+        const cleanPath = this.sanitizePath(elementPath);
+        const element = parser.findElementByPath(cleanPath);
+
+        if (!element) {
+            vscode.window.showErrorMessage('Could not find element to edit in HTML file');
+            console.log('[CodeSync] Failed to find element by path:', cleanPath);
             return false;
         }
 
-        // Find the element in the content using regex
-        const elementRegex = this.buildElementRegex(pathInfo);
-        const match = content.match(elementRegex);
-
-        if (!match) {
-            // Try simpler approach: find by tag name
-            const simpleResult = await this.simpleTextReplace(document, pathInfo.tagName, newText);
-            return simpleResult;
-        }
-
-        // Replace the text content between tags
-        const startTag = match[0];
-        const startIndex = content.indexOf(startTag);
-        const closeTag = `</${pathInfo.tagName}>`;
-        const closeIndex = content.indexOf(closeTag, startIndex + startTag.length);
-
-        if (closeIndex === -1) {
-            vscode.window.showErrorMessage('Could not find closing tag');
-            return false;
-        }
-
-        const newContent =
-            content.substring(0, startIndex + startTag.length) +
-            newText +
-            content.substring(closeIndex);
-
-        return await this.applyEdit(document, content, newContent, 'Text Edit');
+        const newContent = parser.applyTextEdit(element, newText);
+        return await this.applyEdit(document, content, newContent, 'Text Edit (HTML)');
     }
 
     /**
@@ -96,60 +89,32 @@ export class CodeSync {
         console.log('[CodeSync] applyStyleEdit:', { elementPath, property, value });
 
         const content = document.getText();
-        const pathInfo = this.parseElementPath(elementPath);
+        const isReact = document.languageId === 'javascriptreact' || document.languageId === 'typescriptreact';
 
-        if (!pathInfo) {
-            vscode.window.showErrorMessage('Could not parse element path');
+        if (isReact) {
+            const parser = new ReactParser(content, document.languageId === 'typescriptreact');
+            const cleanPath = this.sanitizePath(elementPath); // Sanitize path for React
+            const element = parser.findElementByPath(cleanPath);
+
+            if (!element) return false;
+
+            const newContent = parser.applyStyleEdit(element, property, value);
+            return await this.applyEdit(document, content, newContent, 'Style Edit (React)');
+        }
+
+        // HTML Logic
+        const parser = new HtmlParser(content);
+        const cleanPath = this.sanitizePath(elementPath);
+        const element = parser.findElementByPath(cleanPath);
+
+        if (!element) {
+            vscode.window.showErrorMessage('Could not find element to edit in HTML file');
+            console.log('[CodeSync] Failed to find element by path:', cleanPath);
             return false;
         }
 
-        // Convert camelCase to kebab-case for CSS
-        const cssProperty = property.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
-
-        // Find the element's opening tag
-        let tagRegex: RegExp;
-        if (pathInfo.id) {
-            tagRegex = new RegExp(`<${pathInfo.tagName}[^>]*id=["']${pathInfo.id}["'][^>]*>`, 'i');
-        } else if (pathInfo.className) {
-            tagRegex = new RegExp(`<${pathInfo.tagName}[^>]*class=["'][^"']*${pathInfo.className}[^"']*["'][^>]*>`, 'i');
-        } else {
-            tagRegex = new RegExp(`<${pathInfo.tagName}[^>]*>`, 'i');
-        }
-
-        const match = content.match(tagRegex);
-        if (!match) {
-            vscode.window.showErrorMessage(`Could not find <${pathInfo.tagName}> element`);
-            return false;
-        }
-
-        const openingTag = match[0];
-        let newOpeningTag: string;
-
-        // Check if element already has a style attribute
-        const styleMatch = openingTag.match(/style=["']([^"']*)["']/);
-
-        if (styleMatch) {
-            // Update existing style
-            const existingStyle = styleMatch[1];
-            const propRegex = new RegExp(`${cssProperty}\\s*:\\s*[^;]+;?`, 'g');
-
-            let newStyle: string;
-            if (existingStyle.match(propRegex)) {
-                newStyle = existingStyle.replace(propRegex, `${cssProperty}: ${value};`);
-            } else {
-                newStyle = existingStyle.endsWith(';')
-                    ? `${existingStyle} ${cssProperty}: ${value};`
-                    : `${existingStyle}; ${cssProperty}: ${value};`;
-            }
-
-            newOpeningTag = openingTag.replace(/style=["'][^"']*["']/, `style="${newStyle}"`);
-        } else {
-            // Add new style attribute before the closing >
-            newOpeningTag = openingTag.replace(/>$/, ` style="${cssProperty}: ${value};">`);
-        }
-
-        const newContent = content.replace(openingTag, newOpeningTag);
-        return await this.applyEdit(document, content, newContent, `Style: ${cssProperty}`);
+        const newContent = parser.applyStyleEdit(element, property, value);
+        return await this.applyEdit(document, content, newContent, `Style: ${property}`);
     }
 
     /**
@@ -160,14 +125,23 @@ export class CodeSync {
      * The webview wraps content in #preview-content which doesn't exist in source
      */
     private static sanitizePath(path: string): string {
-        // Remove #preview-content prefix if present
-        const previewPrefixes = ['#preview-content > ', '#preview-content>'];
-        for (const prefix of previewPrefixes) {
-            if (path.startsWith(prefix)) {
-                return path.substring(prefix.length);
+        if (!path) return '';
+
+        // Remove #preview-content (HTML) and #root (React) prefixes
+        const prefixesToRemove = [
+            '#preview-content > ', '#preview-content>',
+            '#root > ', '#root> ',
+            'html > body > #root > ', 'body > #root > '
+        ];
+
+        let cleanPath = path;
+        // Check all prefixes
+        for (const prefix of prefixesToRemove) {
+            if (cleanPath.startsWith(prefix)) {
+                cleanPath = cleanPath.substring(prefix.length);
             }
         }
-        return path;
+        return cleanPath;
     }
 
     /**
@@ -587,19 +561,45 @@ export class CodeSync {
         console.log('[CodeSync] applyElementDelete:', { elementPath, agId });
 
         const content = document.getText();
-        let newContent: string | null = null;
+        const isReact = document.languageId === 'javascriptreact' || document.languageId === 'typescriptreact';
 
-        // Priority 1: Use AST-based deletion (most reliable)
+        if (isReact) {
+            const parser = new ReactParser(content, document.languageId === 'typescriptreact');
+            const cleanPath = this.sanitizePath(elementPath);
+
+            // Try ID first if available
+            const elements = parser.parse();
+            let element = agId ? parser.findElementByAgId(elements, agId) : null;
+
+            // Fallback to path
+            if (!element) {
+                element = parser.findElementByPath(cleanPath);
+            }
+
+            if (!element) {
+                console.log('[CodeSync] Could not find element in React file:', { cleanPath, agId });
+                vscode.window.showErrorMessage('Could not find element to delete');
+                return false;
+            }
+
+            const newContent = parser.deleteElement(element);
+            return await this.applyEdit(document, content, newContent, 'Delete Element (React)');
+        }
+
+        // Standard HTML Logic
+        // Try deleting by ID first (more reliable)
+        let newContent: string | null = null;
         if (agId) {
             newContent = deleteElementById(content, agId);
             if (newContent) {
                 console.log('[CodeSync] Deleted element using AST ID:', agId);
+                return await this.applyEdit(document, content, newContent, 'Delete Element (ID)');
             } else {
                 console.log('[CodeSync] Failed to delete by ID, falling back to path');
             }
         }
 
-        // Fallback: Use path-based deletion
+        // Fallback to path-based deletion
         if (!newContent) {
             const cleanPath = this.sanitizePath(elementPath);
             console.log('[CodeSync] Falling back to path search:', cleanPath);
@@ -631,6 +631,32 @@ export class CodeSync {
         console.log('[CodeSync] applyElementDuplicate:', { elementPath, agId });
 
         const content = document.getText();
+        const isReact = document.languageId === 'javascriptreact' || document.languageId === 'typescriptreact';
+
+        // React Logic
+        if (isReact) {
+            const parser = new ReactParser(content, document.languageId === 'typescriptreact');
+            const cleanPath = this.sanitizePath(elementPath);
+
+            // Try ID first if available
+            const elements = parser.parse();
+            let element = agId ? parser.findElementByAgId(elements, agId) : null;
+
+            // Fallback to path
+            if (!element) {
+                element = parser.findElementByPath(cleanPath);
+            }
+
+            if (!element) {
+                console.log('[CodeSync] Could not find element in React file:', { cleanPath, agId });
+                vscode.window.showErrorMessage('Could not find element to duplicate');
+                return false;
+            }
+
+            const newContent = parser.duplicateElement(element);
+            return await this.applyEdit(document, content, newContent, 'Duplicate Element (React)');
+        }
+
         let newContent: string | null = null;
 
         // Priority 1: Use AST-based duplication
@@ -670,21 +696,54 @@ export class CodeSync {
         document: vscode.TextDocument,
         elementPath: string,
         newParentPath: string,
-        newIndex: number
+        newIndex: number,
+        agId?: string,
+        direction?: 'up' | 'down',
+        moveType: 'rearrange' | 'step' = 'rearrange'
     ): Promise<boolean> {
         // Sanitize paths to remove preview-specific prefixes
         const cleanElementPath = this.sanitizePath(elementPath);
-        const cleanParentPath = this.sanitizePath(newParentPath);
-
-        console.log('[CodeSync] applyElementMove:', {
-            originalElementPath: elementPath,
-            originalParentPath: newParentPath,
-            cleanElementPath,
-            cleanParentPath,
-            newIndex
-        });
-
+        const cleanParentPath = newParentPath ? this.sanitizePath(newParentPath) : '';
         const content = document.getText();
+        const isReact = document.languageId === 'javascriptreact' || document.languageId === 'typescriptreact';
+
+        // Handle React Reordering using AST
+        if (isReact) {
+            const parser = new ReactParser(content, document.languageId === 'typescriptreact');
+            const elements = parser.parse();
+            let element = agId ? parser.findElementByAgId(elements, agId) : null;
+            if (!element) element = parser.findElementByPath(cleanElementPath);
+
+            if (element) {
+                let targetIndex = newIndex;
+
+                // Handle Up/Down buttons by calculating the relative index
+                if (moveType === 'step' && direction) {
+                    const parent = parser.findParent(elements, element);
+                    if (parent) {
+                        const currentIndex = parent.children.findIndex(s =>
+                            s.location.startLine === element!.location.startLine &&
+                            s.location.startColumn === element!.location.startColumn
+                        );
+
+                        targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+
+                        // Bounds check
+                        if (targetIndex < 0 || targetIndex >= parent.children.length) {
+                            console.log(`[CodeSync] Step Move: Out of bounds (${targetIndex})`);
+                            return false;
+                        }
+
+                        console.log(`[CodeSync] Step Move: ${direction} from ${currentIndex} to ${targetIndex}`);
+                    }
+                }
+
+                const newContent = parser.reorderElement(element, targetIndex);
+                if (newContent !== content) {
+                    return await this.applyEdit(document, content, newContent, `Rearrange Element (${moveType})`);
+                }
+            }
+        }
 
         // Use new path traversal to find the element
         const elementLocation = this.findElementByPath(content, cleanElementPath);
@@ -943,6 +1002,15 @@ export class CodeSync {
 
         // Use the DiffPreviewProvider to record changes and show diff view
         const diffProvider = DiffPreviewProvider.getInstance();
-        return await diffProvider.recordChange(document, newContent, description);
+        const success = await diffProvider.recordChange(document, newContent, description);
+
+        // Auto-save to trigger HMR (Hot Module Replacement) in dev server
+        // This works for all frameworks (React, Vue, Svelte, etc.) as all dev servers watch the file system
+        if (success) {
+            console.log('[CodeSync] Auto-saving to trigger HMR');
+            await document.save();
+        }
+
+        return success;
     }
 }
