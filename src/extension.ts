@@ -163,7 +163,7 @@ export function getFormattedContext(): string {
 }
 
 /**
- * Automatically installs the Agent Workflow definition into the user's workspace
+ * Automatically installs the Agent Workflow definitions into the user's workspace
  */
 async function installAgentWorkflow(context: vscode.ExtensionContext) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -174,32 +174,36 @@ async function installAgentWorkflow(context: vscode.ExtensionContext) {
     const rootUri = workspaceFolders[0].uri;
     const agentDir = vscode.Uri.joinPath(rootUri, '.agent');
     const workflowsDir = vscode.Uri.joinPath(agentDir, 'workflows');
-    const targetFile = vscode.Uri.joinPath(workflowsDir, 'visual-editor.md');
+
+    // List of workflow files to install
+    const workflowFiles = ['visual-editor.md', 'code-generation.md'];
 
     try {
-        // Source file in the extension's resources folder
-        const sourceFile = vscode.Uri.joinPath(context.extensionUri, 'resources', 'workflows', 'visual-editor.md');
-
-        // Check if target already exists to avoid overwriting user customizations
-        try {
-            await vscode.workspace.fs.stat(targetFile);
-            // It exists, do nothing
-            console.log('[Antigravity] Workflow file already exists, skipping injection.');
-            return;
-        } catch (e) {
-            // Target doesn't exist, proceed
-        }
-
-        // Create directories
+        // Create directories first
         await vscode.workspace.fs.createDirectory(agentDir);
         await vscode.workspace.fs.createDirectory(workflowsDir);
 
-        // Copy file
-        await vscode.workspace.fs.copy(sourceFile, targetFile, { overwrite: true });
-        console.log('[Antigravity] Workflow injected successfully to', targetFile.fsPath);
+        for (const fileName of workflowFiles) {
+            const targetFile = vscode.Uri.joinPath(workflowsDir, fileName);
+            const sourceFile = vscode.Uri.joinPath(context.extensionUri, 'resources', 'workflows', fileName);
+
+            // Check if target already exists to avoid overwriting user customizations
+            try {
+                await vscode.workspace.fs.stat(targetFile);
+                // It exists, skip
+                console.log(`[Antigravity] Workflow ${fileName} already exists, skipping.`);
+                continue;
+            } catch (e) {
+                // Target doesn't exist, proceed
+            }
+
+            // Copy file
+            await vscode.workspace.fs.copy(sourceFile, targetFile, { overwrite: true });
+            console.log(`[Antigravity] Workflow ${fileName} injected successfully.`);
+        }
 
     } catch (error) {
-        console.error('[Antigravity] Failed to inject workflow:', error);
+        console.error('[Antigravity] Failed to inject workflows:', error);
     }
 }
 export function getFormattedAgentContext(): string {

@@ -152,7 +152,7 @@ Antigravity is designed to be the "eyes" for your AI coding assistant.
 ## 📋 Known Limitations
 
 - Moving elements between different containers is not yet supported
-- React components with very complex conditional rendering may have path matching issues, a rules file is created to inform the AI agent about the preffered way to generate code for compatibility
+- React components with complex conditional rendering may have path matching issues. AI agents automatically follow compatibility rules via `AGENTS.md` (proper element structure, avoiding fragments, using direct text content, etc.)
 - Dev server uses many ports if multiple projects are open
 
 ---

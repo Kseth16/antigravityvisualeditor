@@ -44,3 +44,15 @@ To apply a style change:
 ## Context File Location
 
 The file `.antigravity-context.json` is in the workspace root. It's updated every time the user selects a new element in the Visual Editor.
+
+## Code Generation Rules
+
+When generating or modifying HTML/JSX/TSX code in this workspace, **automatically apply the rules from `.agent/workflows/code-generation.md`** to ensure compatibility with the Visual Editor. Key rules include:
+
+- Use proper element structure with opening/closing tags on separate lines
+- Give key sections `id` or `class`/`className` attributes
+- Avoid fragments (`<>...</>`) for elements that need to be editable
+- Wrap logical groups in container elements
+- Use direct text content, not variables
+- Use inline `style` objects with camelCase properties for JSX
+
