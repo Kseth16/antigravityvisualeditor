@@ -175,7 +175,7 @@ async function installAgentWorkflow(context: vscode.ExtensionContext) {
     const agentDir = vscode.Uri.joinPath(rootUri, '.agent');
     const workflowsDir = vscode.Uri.joinPath(agentDir, 'workflows');
 
-    // List of workflow files to install
+    // List of workflow files to install to .agent/workflows/
     const workflowFiles = ['visual-editor.md', 'code-generation.md'];
 
     try {
@@ -183,6 +183,7 @@ async function installAgentWorkflow(context: vscode.ExtensionContext) {
         await vscode.workspace.fs.createDirectory(agentDir);
         await vscode.workspace.fs.createDirectory(workflowsDir);
 
+        // Install workflow files
         for (const fileName of workflowFiles) {
             const targetFile = vscode.Uri.joinPath(workflowsDir, fileName);
             const sourceFile = vscode.Uri.joinPath(context.extensionUri, 'resources', 'workflows', fileName);
@@ -190,16 +191,27 @@ async function installAgentWorkflow(context: vscode.ExtensionContext) {
             // Check if target already exists to avoid overwriting user customizations
             try {
                 await vscode.workspace.fs.stat(targetFile);
-                // It exists, skip
                 console.log(`[Antigravity] Workflow ${fileName} already exists, skipping.`);
                 continue;
             } catch (e) {
                 // Target doesn't exist, proceed
             }
 
-            // Copy file
             await vscode.workspace.fs.copy(sourceFile, targetFile, { overwrite: true });
             console.log(`[Antigravity] Workflow ${fileName} injected successfully.`);
+        }
+
+        // Install AGENTS.md to project root (AI assistants read this automatically)
+        const agentsTarget = vscode.Uri.joinPath(rootUri, 'AGENTS.md');
+        const agentsSource = vscode.Uri.joinPath(context.extensionUri, 'resources', 'AGENTS.md');
+
+        try {
+            await vscode.workspace.fs.stat(agentsTarget);
+            console.log('[Antigravity] AGENTS.md already exists, skipping.');
+        } catch (e) {
+            // Doesn't exist, install it
+            await vscode.workspace.fs.copy(agentsSource, agentsTarget, { overwrite: true });
+            console.log('[Antigravity] AGENTS.md installed to project root.');
         }
 
     } catch (error) {
