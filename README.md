@@ -36,6 +36,12 @@ Review all changes before applying - additions in green, deletions in red.
 
 ![Code Diff](images/code-diff.png)
 
+
+### AI Context Workflow
+The AI reads the selected element's context and applies changes to the exact source location.
+
+![AI Context Workflow](images/ai-context-workflow.png)
+
 ---
 
 ## ✨ Key Features
@@ -149,6 +155,14 @@ Antigravity is designed to be the "eyes" for your AI coding assistant.
    - *"/visual-editor Make this button have a red background"*
    - *"/visual-editor Duplicate this card three times"*
    - *"/visual-editor Add 20px padding to this container"*
+
+### How It Works
+
+1. **Select** an element → Antigravity writes its details to `.antigravity-context.json`
+2. **AI Reads Context** → Learns the element's tag, classes, styles, and **exact source location**
+3. **Precise Edits** → AI opens the correct file and applies changes directly to the right element
+
+This enables natural commands like *"make background pink"* - the AI knows exactly which element you mean!
 
 ---
 
