@@ -9,6 +9,35 @@ Focus on design without losing control of your code. Antigravity bridges the gap
 
 ---
 
+## 📸 Screenshots
+
+### Visual Editor Overview
+Select any element to see the floating toolbar with editing options.
+
+![Extension Overview](images/extension-overview.png)
+
+### Style Menu
+Edit typography, colors, spacing, and more from the intuitive style panel.
+
+![Style Menu](images/style-menu.png)
+
+### Duplicate & Delete
+One-click duplication and deletion with instant preview updates.
+
+![Duplicate and Delete](images/duplicate-delete.png)
+
+### Drag & Drop Rearrangement
+Move elements freely with visual feedback.
+
+![Move Elements](images/move-elements.png)
+
+### Code Diff Preview
+Review all changes before applying - additions in green, deletions in red.
+
+![Code Diff](images/code-diff.png)
+
+---
+
 ## ✨ Key Features
 
 ### 🖼️ Real-Time Preview
